@@ -135,7 +135,7 @@ class test_runner;
    function void cleanup();
       $fwrite(trace_fd, "test_suite_done\n");
       exit_without_errors = 1;
-      $stop(0);
+      $finish(0);//$stop(0); // incisive hangs
    endfunction
 
    function int loop();
@@ -162,7 +162,7 @@ class test_runner;
                end
                else if (!found) begin
                   $error("Found no \"%s\" test case", test_cases_to_run[j]);
-                  $stop(1);
+                  $finish(1);//$stop(1); // incisive hangs
                   return 0;
                end
             end
