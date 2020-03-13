@@ -56,6 +56,8 @@ class VUnit(  # pylint: disable=too-many-instance-attributes, too-many-public-me
        from vunit import VUnit
     """
 
+#    from ._hdlmake import add_source_files_from_hdlmake
+
     @classmethod
     def from_argv(
         cls, argv=None, compile_builtins=True, vhdl_standard: Optional[str] = None
@@ -1061,3 +1063,78 @@ avoid location preprocessing of other functions sharing name with a VUnit log or
         if self._simulator_class is None:
             return None
         return self._simulator_class.name
+
+
+    def add_source_files_from_hdlmake(
+        self, project_manifest_path, vhdl_standard: Optional[str] = None
+    ):
+        """
+        Add a project configuration, mapping all the libraries and files
+
+        :param project_manifest_path: path to Manifest.py specification in hdlmake format
+                                variables of interest are:
+                                    top_module, sim_top, modules, files, include_dirs, library
+        :param vhdl_standard: The VHDL standard used to compile files,
+                              if None, the VUNIT_VHDL_STANDARD environment variable is used
+        :returns: A list of files (:class `.SourceFileList`) that were added
+
+        """
+        from hdlmake.action.action import Action
+        from hdlmake.main import _get_parser
+        parser = _get_parser()
+        options = parser.parse_args([])
+
+        action = Action(options)
+        action.tool = None
+        action.top_manifest = action.new_module(parent=None,
+                                            url=dirname(project_manifest_path),
+                                            source=None,
+                                            fetchto=".")
+        # Parse the top manifest and all sub-modules.
+        action.top_manifest.parse_manifest()
+        top_dict = action.top_manifest.manifest_dict
+        top_entity = top_dict.get("sim_top") or top_dict.get("top_module") or None
+        action.build_file_set()
+        # action.solve_file_set() # redundant, let vunit solve dependencies
+        fileset = action.parseable_fileset # includes vhdl/verilog/sv files when no tool/action used
+
+        libs: Set[str] = set()
+        files = SourceFileList(list())
+        for f in fileset:
+            file_name_ = normpath(
+                join(dirname(project_manifest_path), f.path)
+            )
+            if f.library == "work": f.library = "worklib"
+            if 0:
+                lib = self.library(f.library)
+                pass # default library doesn't need to be created
+            else:
+                lib = (
+                    self.library(f.library)
+                    if f.library in libs
+                    else self.add_library(f.library, allow_duplicate=True)
+                )
+                libs.add(f.library)
+            try:
+                file_ = lib.add_source_file(
+                      file_name=file_name_,
+                      #preprocessors=preprocessors,
+                      include_dirs=f.include_dirs,
+                      #defines=defines,
+                      vhdl_standard=vhdl_standard,
+                      #no_parse=no_parse,
+                      #file_type=file_type,
+                      )
+            except AttributeError:
+                file_ = lib.add_source_file(
+                      file_name=file_name_,
+                      #preprocessors=preprocessors,
+                      #include_dirs=f.include_dirs,
+                      #defines=defines,
+                      vhdl_standard=vhdl_standard,
+                      #no_parse=no_parse,
+                      #file_type=file_type,
+                      )
+            files.append(file_)
+        return files
+
