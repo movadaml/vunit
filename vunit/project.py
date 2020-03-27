@@ -9,10 +9,9 @@
 """
 Functionality to represent and operate on a HDL code project
 """
-from os.path import join, basename, dirname, isdir, exists
+from typing import Optional, Union
 from pathlib import Path
 import logging
-from typing import Optional
 from collections import OrderedDict
 from vunit.hashing import hash_string
 from vunit.dependency_graph import DependencyGraph, CircularDependencyException
@@ -84,7 +83,7 @@ class Project(object):  # pylint: disable=too-many-instance-attributes
     def add_library(
         self,
         logical_name,
-        directory,
+        directory: Union[str, Path],
         vhdl_standard: VHDLStandard = VHDL.STD_2008,
         is_external=False,
     ):
@@ -94,19 +93,18 @@ class Project(object):  # pylint: disable=too-many-instance-attributes
         """
         self._validate_new_library_name(logical_name)
 
+        dpath = Path(directory)
+        dstr = str(directory)
+
         if is_external:
-            if not exists(directory):
-                raise ValueError("External library %r does not exist" % directory)
+            if not dpath.exists():
+                raise ValueError("External library %r does not exist" % dstr)
 
-            if not isdir(directory):
-                raise ValueError(
-                    "External library must be a directory. Got %r" % directory
-                )
+            if not dpath.is_dir():
+                raise ValueError("External library must be a directory. Got %r" % dstr)
 
-        library = Library(
-            logical_name, directory, vhdl_standard, is_external=is_external
-        )
-        LOGGER.debug("Adding library %s with path %s", logical_name, directory)
+        library = Library(logical_name, dstr, vhdl_standard, is_external=is_external)
+        LOGGER.debug("Adding library %s with path %s", logical_name, dstr)
 
         self._libraries[logical_name] = library
         self._lower_library_names_dict[logical_name.lower()] = library.name
@@ -610,9 +608,12 @@ class Project(object):  # pylint: disable=too-many-instance-attributes
         Returns the name of the hash file associated with the source_file
         """
         library = self.get_library(source_file.library.name)
-        prefix = hash_string(dirname(source_file.name))
-        return join(
-            library.directory, prefix, basename(source_file.name) + ".vunit_hash"
+        prefix = hash_string(str(Path(source_file.name).parent))
+        return str(
+            Path(library.directory)
+            / prefix
+            / Path(source_file.name).name
+            / ".vunit_hash"
         )
 
     def update(self, source_file):

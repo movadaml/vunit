@@ -10,7 +10,9 @@ Simulator interface(s)
 
 import sys
 import os
+from os import environ, listdir, pathsep
 import subprocess
+from pathlib import Path
 from typing import List
 from ..ostools import Process, simplify_path
 from ..exceptions import CompileError
@@ -77,12 +79,12 @@ class SimulatorInterface(object):  # pylint: disable=too-many-public-methods
         """
         Return a list of all executables found in PATH
         """
-        path = os.environ.get("PATH", None)
+        path = environ.get("PATH", None)
         if path is None:
             return []
 
-        paths = path.split(os.pathsep)
-        _, ext = os.path.splitext(executable)
+        paths = path.split(pathsep)
+        ext = Path(executable).suffix
 
         if (sys.platform == "win32" or os.name == "os2") and (ext != ".exe"):
             executable = executable + ".exe"
@@ -92,7 +94,7 @@ class SimulatorInterface(object):  # pylint: disable=too-many-public-methods
             result.append(executable)
 
         for prefix in paths:
-            file_name = os.path.join(prefix, executable)
+            file_name = str(Path(prefix) / executable)
             if isfile(file_name):
                 # the file exists, we have a shot at spawn working
                 result.append(file_name)
@@ -133,7 +135,7 @@ class SimulatorInterface(object):  # pylint: disable=too-many-public-methods
 
         all_paths = [
             [
-                os.path.abspath(os.path.dirname(executables))
+                str(Path(executables).parent.resolve())
                 for executables in cls.find_executable(name)
             ]
             for name in executables
@@ -170,7 +172,14 @@ class SimulatorInterface(object):  # pylint: disable=too-many-public-methods
     @staticmethod
     def supports_vhpi():
         """
-        Return if the simulator supports VHPI
+        Returns True when the simulator supports VHPI
+        """
+        return False
+
+    @staticmethod
+    def supports_coverage():
+        """
+        Returns True when the simulator supports coverage
         """
         return False
 
@@ -214,7 +223,7 @@ class SimulatorInterface(object):  # pylint: disable=too-many-public-methods
         Implemented by specific simulators
         """
 
-    def __compile_source_file(self, source_file, printer):
+    def _compile_source_file(self, source_file, printer):
         """
         Compiles a single source file and prints status information
         """
@@ -295,7 +304,7 @@ class SimulatorInterface(object):  # pylint: disable=too-many-public-methods
                 printer.write("\n")
                 continue
 
-            if self.__compile_source_file(source_file, printer):
+            if self._compile_source_file(source_file, printer):
                 project.update(source_file)
             else:
                 source_files_to_skip.update(
@@ -329,12 +338,13 @@ class SimulatorInterface(object):  # pylint: disable=too-many-public-methods
 
 def isfile(file_name):
     """
-    Case insensitive os.path.isfile
+    Case insensitive Path.is_file()
     """
-    if not os.path.isfile(file_name):
+    fpath = Path(file_name)
+    if not fpath.is_file():
         return False
 
-    return os.path.basename(file_name) in os.listdir(os.path.dirname(file_name))
+    return str(fpath.name) in listdir(str(fpath.parent))
 
 
 def run_command(command, cwd=None, env=None):

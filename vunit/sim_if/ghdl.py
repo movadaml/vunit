@@ -9,11 +9,12 @@ Interface for GHDL simulator
 """
 
 from pathlib import Path
-from os.path import exists, join, abspath
-import os
+from os import environ, makedirs, remove
 import logging
 import subprocess
 import shlex
+import re
+import shutil
 from json import dump
 from sys import stdout  # To avoid output catched in non-verbose mode
 from warnings import warn
@@ -25,13 +26,13 @@ from ..vhdl_standard import VHDL
 LOGGER = logging.getLogger(__name__)
 
 
-class GHDLInterface(SimulatorInterface):
+class GHDLInterface(SimulatorInterface):  # pylint: disable=too-many-instance-attributes
     """
     Interface for GHDL simulator
     """
 
     name = "ghdl"
-    executable = os.environ.get("GHDL", "ghdl")
+    executable = environ.get("GHDL", "ghdl")
     supports_gui_flag = True
     supports_colors_in_gui = True
 
@@ -108,12 +109,22 @@ class GHDLInterface(SimulatorInterface):
         self._gtkwave_args = gtkwave_args
         self._backend = backend
         self._vhdl_standard = None
+        self._coverage_test_dirs = set()
 
     def has_valid_exit_code(self):
         """
         Return if the simulation should fail with nonzero exit codes
         """
         return self._vhdl_standard >= VHDL.STD_2008
+
+    @classmethod
+    def _get_version_output(cls, prefix):
+        """
+        Get the output of 'ghdl --version'
+        """
+        return subprocess.check_output(
+            [str(Path(prefix) / cls.executable), "--version"]
+        ).decode()
 
     @classmethod
     def determine_backend(cls, prefix):
@@ -125,9 +136,7 @@ class GHDLInterface(SimulatorInterface):
             "llvm code generator": "llvm",
             "GCC back-end code generator": "gcc",
         }
-        output = subprocess.check_output(
-            [join(prefix, cls.executable), "--version"]
-        ).decode()
+        output = cls._get_version_output(prefix)
         for name, backend in mapping.items():
             if name in output:
                 LOGGER.debug("Detected GHDL %s", name)
@@ -143,11 +152,32 @@ class GHDLInterface(SimulatorInterface):
         )
 
     @classmethod
+    def determine_version(cls, prefix):
+        """
+        Determine the GHDL version
+        """
+        return float(
+            re.match(
+                r"GHDL ([0-9]*\.[0-9]*).*\(.*\) \[Dunoon edition\]",
+                cls._get_version_output(prefix),
+            ).group(1)
+        )
+
+    @classmethod
     def supports_vhpi(cls):
         """
-        Return if the simulator supports VHPI
+        Returns True when the simulator supports VHPI
         """
-        return cls.determine_backend(cls.find_prefix_from_path()) != "mcode"
+        return (cls.determine_backend(cls.find_prefix_from_path()) != "mcode") or (
+            cls.determine_version(cls.find_prefix_from_path()) > 0.36
+        )
+
+    @classmethod
+    def supports_coverage(cls):
+        """
+        Returns True when the simulator supports coverage
+        """
+        return cls.determine_backend(cls.find_prefix_from_path()) == "gcc"
 
     def _has_output_flag(self):
         """
@@ -161,8 +191,8 @@ class GHDLInterface(SimulatorInterface):
         """
         self._project = project
         for library in project.get_libraries():
-            if not exists(library.directory):
-                os.makedirs(library.directory)
+            if not Path(library.directory).exists():
+                makedirs(library.directory)
 
         vhdl_standards = set(
             source_file.get_vhdl_standard()
@@ -211,7 +241,7 @@ class GHDLInterface(SimulatorInterface):
         Returns the command to compile a vhdl file
         """
         cmd = [
-            join(self._prefix, self.executable),
+            str(Path(self._prefix) / self.executable),
             "-a",
             "--workdir=%s" % source_file.library.directory,
             "--work=%s" % source_file.library.name,
@@ -233,14 +263,22 @@ class GHDLInterface(SimulatorInterface):
             a_flags += flags
 
         cmd += a_flags
+
+        if source_file.compile_options.get("enable_coverage", False):
+            # Add gcc compilation flags for coverage
+            #   -ftest-coverages creates .gcno notes files needed by gcov
+            #   -fprofile-arcs creates branch profiling in .gcda database files
+            cmd += ["-fprofile-arcs", "-ftest-coverage"]
         cmd += [source_file.name]
         return cmd
 
-    def _get_command(self, config, output_path, elaborate_only, ghdl_e, wave_file):
+    def _get_command(  # pylint: disable=too-many-branches
+        self, config, output_path, elaborate_only, ghdl_e, wave_file
+    ):
         """
         Return GHDL simulation command
         """
-        cmd = [join(self._prefix, self.executable)]
+        cmd = [str(Path(self._prefix) / self.executable)]
 
         if ghdl_e:
             cmd += ["-e"]
@@ -254,12 +292,16 @@ class GHDLInterface(SimulatorInterface):
         ]
         cmd += ["-P%s" % lib.directory for lib in self._project.get_libraries()]
 
-        bin_path = join(
-            output_path, "%s-%s" % (config.entity_name, config.architecture_name)
+        bin_path = str(
+            Path(output_path)
+            / ("%s-%s" % (config.entity_name, config.architecture_name))
         )
         if self._has_output_flag():
             cmd += ["-o", bin_path]
         cmd += config.sim_options.get("ghdl.elab_flags", [])
+        if config.sim_options.get("enable_coverage", False):
+            # Enable coverage in linker
+            cmd += ["-Wl,-lgcov"]
         cmd += [config.entity_name, config.architecture_name]
 
         sim = config.sim_options.get("ghdl.sim_flags", [])
@@ -281,10 +323,10 @@ class GHDLInterface(SimulatorInterface):
                 cmd += ["--no-run"]
         else:
             try:
-                os.makedirs(output_path, mode=0o777)
+                makedirs(output_path, mode=0o777)
             except OSError:
                 pass
-            with open(join(output_path, "args.json"), "w") as fname:
+            with (Path(output_path) / "args.json").open("w") as fname:
                 dump(
                     {
                         "bin": str(
@@ -306,17 +348,17 @@ class GHDLInterface(SimulatorInterface):
         Simulate with entity as top level using generics
         """
 
-        script_path = join(output_path, self.name)
+        script_path = str(Path(output_path) / self.name)
 
-        if not exists(script_path):
-            os.makedirs(script_path)
+        if not Path(script_path).exists():
+            makedirs(script_path)
 
         ghdl_e = elaborate_only and config.sim_options.get("ghdl.elab_e", False)
 
         if self._gtkwave_fmt is not None:
-            data_file_name = join(script_path, "wave.%s" % self._gtkwave_fmt)
-            if exists(data_file_name):
-                os.remove(data_file_name)
+            data_file_name = str(Path(script_path) / ("wave.%s" % self._gtkwave_fmt))
+            if Path(data_file_name).exists():
+                remove(data_file_name)
         else:
             data_file_name = None
 
@@ -325,8 +367,16 @@ class GHDLInterface(SimulatorInterface):
         )
 
         status = True
+
+        gcov_env = environ.copy()
+        if config.sim_options.get("enable_coverage", False):
+            # Set environment variable to put the coverage output in the test_output folder
+            coverage_dir = str(Path(output_path) / "coverage")
+            gcov_env["GCOV_PREFIX"] = coverage_dir
+            self._coverage_test_dirs.add(coverage_dir)
+
         try:
-            proc = Process(cmd)
+            proc = Process(cmd, env=gcov_env)
             proc.consume_output()
         except Process.NonZeroExitCode:
             status = False
@@ -336,9 +386,60 @@ class GHDLInterface(SimulatorInterface):
 
             init_file = config.sim_options.get(self.name + ".gtkwave_script.gui", None)
             if init_file is not None:
-                cmd += ["--script", "{}".format(abspath(init_file))]
+                cmd += ["--script", "{}".format(str(Path(init_file).resolve()))]
 
             stdout.write("%s\n" % " ".join(cmd))
             subprocess.call(cmd)
 
         return status
+
+    def _compile_source_file(self, source_file, printer):
+        """
+        Runs parent command for compilation, and moves any .gcno files to the compilation output
+        """
+        compilation_ok = super()._compile_source_file(source_file, printer)
+
+        if source_file.compile_options.get("enable_coverage", False):
+            # GCOV gcno files are output to where the command is run,
+            # move it back to the compilation folder
+            source_path = Path(source_file.name)
+            gcno_file = Path(source_path.stem + ".gcno")
+            if Path(gcno_file).exists():
+                new_path = Path(source_file.library.directory) / gcno_file
+                gcno_file.rename(new_path)
+
+        return compilation_ok
+
+    def merge_coverage(self, file_name, args=None):
+        """
+        Merge coverage from all test cases
+        """
+        output_dir = file_name
+
+        # Loop over each .gcda output folder and merge them two at a time
+        first_input = True
+        for coverage_dir in self._coverage_test_dirs:
+            if Path(coverage_dir).exists():
+                merge_command = [
+                    "gcov-tool",
+                    "merge",
+                    "-o",
+                    output_dir,
+                    coverage_dir if first_input else output_dir,
+                    coverage_dir,
+                ]
+                subprocess.call(merge_command)
+                first_input = False
+            else:
+                LOGGER.warning("Missing coverage directory: %s", coverage_dir)
+
+        # Find actual output path of the .gcda files (they are deep in hierarchy)
+        dir_path = Path(output_dir)
+        gcda_dirs = {x.parent for x in dir_path.glob("**/*.gcda")}
+        assert len(gcda_dirs) == 1, "Expected exactly one folder with gcda files"
+        gcda_dir = gcda_dirs.pop()
+
+        # Add compile-time .gcno files as well, they are needed for the report
+        for library in self._project.get_libraries():
+            for gcno_file in Path(library.directory).glob("*.gcno"):
+                shutil.copy(gcno_file, gcda_dir)
