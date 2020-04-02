@@ -58,11 +58,15 @@ class Project(object):  # pylint: disable=too-many-instance-attributes
         Check that the library_name is valid or raise RuntimeError
         """
         if library_name == "work":
-            LOGGER.error(
-                "Cannot add library named work. work is a reference to the current library. "
-                "http://www.sigasi.com/content/work-not-vhdl-library"
-            )
-            raise RuntimeError("Illegal library name 'work'")
+            if True:
+                # Xcelium builds UVM into work - requiring all uvm test code to also use work
+                pass
+            else:
+                LOGGER.error(
+                    "Cannot add library named work. work is a reference to the current library. "
+                    "http://www.sigasi.com/content/work-not-vhdl-library"
+                )
+                raise RuntimeError("Illegal library name 'work'")
 
         if library_name in self._libraries:
             raise ValueError("Library %s already exists" % library_name)

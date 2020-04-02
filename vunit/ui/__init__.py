@@ -1112,17 +1112,12 @@ avoid location preprocessing of other functions sharing name with a VUnit log or
             file_name_ = normpath(
                 join(dirname(project_manifest_path), f.path)
             )
-            if f.library == "work": f.library = "worklib"
-            if 0:
-                lib = self.library(f.library)
-                pass # default library doesn't need to be created
-            else:
-                lib = (
-                    self.library(f.library)
-                    if f.library in libs
-                    else self.add_library(f.library, allow_duplicate=True)
-                )
-                libs.add(f.library)
+            lib = (
+                self.library(f.library)
+                if f.library in libs
+                else self.add_library(f.library, allow_duplicate=True)
+            )
+            libs.add(f.library)
             try:
                 file_ = lib.add_source_file(
                       file_name=file_name_,
